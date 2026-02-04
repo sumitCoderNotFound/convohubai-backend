@@ -78,6 +78,18 @@ class Settings(BaseSettings):
     emails_from_email: str = ""
     emails_from_name: str = "ConvoHubAI"
 
+    # Twilio
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_phone_number: str = ""
+    
+    # Deepgram
+    deepgram_api_key: str = ""
+
+    # App URL
+    app_base_url: str = "http://localhost:8000"
+
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

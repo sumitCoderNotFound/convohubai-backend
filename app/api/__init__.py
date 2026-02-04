@@ -2,7 +2,7 @@
 ConvoHubAI - API Routes
 """
 from fastapi import APIRouter
-from app.api.routes import auth, workspaces, agents, chat, knowledge_base, webhooks, simulation
+from app.api.routes import auth, workspaces, agents, chat, knowledge_base, webhooks, simulation, voice, flows
 
 # Main API router
 api_router = APIRouter()
@@ -15,5 +15,9 @@ api_router.include_router(chat.router)
 api_router.include_router(knowledge_base.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(simulation.router)
+api_router.include_router(voice.router)
+api_router.include_router(flows.router)
+
+
 
 __all__ = ["api_router"]

@@ -34,6 +34,10 @@ class PhoneNumber(BaseModel):
     
     # Twilio info
     twilio_sid = Column(String(100), nullable=True)
+
+    provider = Column(String(50), default="twilio")
+    phone_sid = Column(String(100), nullable=True)
+    capabilities = Column(JSON, default={"voice": True, "sms": True})
     
     # Type and status
     number_type = Column(
