@@ -48,5 +48,8 @@ api_router.include_router(settings.router)
 from app.api.routes import monitor
 api_router.include_router(monitor.router)
 
+from app.api.routes import video
+api_router.include_router(video.router)
+
 
 __all__ = ["api_router"]

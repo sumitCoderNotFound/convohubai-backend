@@ -86,6 +86,14 @@ class Settings(BaseSettings):
     # Deepgram
     deepgram_api_key: str = ""
 
+    # LiveKit Video
+    livekit_api_key: str = ""
+    livekit_api_secret: str = ""
+    livekit_url: str = "ws://localhost:7880"
+
+    # Groq (FREE AI)
+    groq_api_key: str = ""
+
     # App URL
     app_base_url: str = "http://localhost:8000"
 
