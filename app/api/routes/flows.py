@@ -1,20 +1,22 @@
 """
 ConvoHubAI - Conversation Flow API Routes
-CRUD operations for visual workflow builder
+CRUD operations for visual workflow builder + AI Flow Generator
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
-from typing import Optional, List, Any
+from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
 from pydantic import BaseModel
+import json
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.agent import Agent
-from app.models.conversation_flow import ConversationFlow, FlowNode
+from app.models.conversation_flow import ConversationFlow
+from app.services.llm_service import llm_service
 
 
 router = APIRouter(prefix="/flows", tags=["Conversation Flows"])
@@ -23,34 +25,6 @@ router = APIRouter(prefix="/flows", tags=["Conversation Flows"])
 # ============================================
 # SCHEMAS
 # ============================================
-
-class NodeData(BaseModel):
-    label: Optional[str] = None
-    content: Optional[str] = None
-    variable_name: Optional[str] = None
-    expected_type: Optional[str] = None
-    choices: Optional[List[str]] = None
-    conditions: Optional[List[dict]] = None
-    action_type: Optional[str] = None
-    action_config: Optional[dict] = None
-
-
-class FlowNodeSchema(BaseModel):
-    id: str
-    type: str
-    position: dict
-    data: NodeData
-
-
-class FlowEdgeSchema(BaseModel):
-    id: str
-    source: str
-    target: str
-    sourceHandle: Optional[str] = None
-    targetHandle: Optional[str] = None
-    label: Optional[str] = None
-    type: Optional[str] = "smoothstep"
-
 
 class FlowCreateRequest(BaseModel):
     name: str
@@ -88,18 +62,92 @@ class FlowResponse(BaseModel):
         from_attributes = True
 
 
+class AIFlowGenerateRequest(BaseModel):
+    """Request to generate a flow using AI."""
+    prompt: str
+    agent_id: UUID
+    flow_name: Optional[str] = None
+
+
 # ============================================
-# FLOW CRUD OPERATIONS
+# AI FLOW GENERATOR SYSTEM PROMPT
 # ============================================
 
-@router.post("", response_model=FlowResponse)
-async def create_flow(
-    data: FlowCreateRequest,
+AI_FLOW_SYSTEM_PROMPT = """You are an expert conversation flow designer. Convert natural language descriptions into structured conversation flows.
+
+Generate a JSON object with:
+1. "name": Flow name (string)
+2. "description": Brief description (string)
+3. "nodes": Array of node objects
+4. "edges": Array of edge objects connecting nodes
+
+NODE TYPES:
+- "start": Entry point (always first, only one)
+- "message": Display a message to user
+- "question": Ask user a question and save response
+- "condition": Branch based on user's answer
+- "action": Perform an action (save_lead, send_email, book_appointment, webhook)
+- "end": End the conversation (always last)
+
+NODE STRUCTURE:
+{
+  "id": "unique-id",
+  "type": "start|message|question|condition|action|end",
+  "position": {"x": number, "y": number},
+  "data": {
+    "label": "Node label",
+    "message": "For message nodes - the text to display",
+    "question": "For question nodes - the question to ask",
+    "options": ["Option 1", "Option 2"], // For multiple choice questions
+    "inputType": "text|email|tel|date|textarea", // For open questions
+    "saveAs": "variable_name", // Variable to save user's answer
+    "condition": "variable_name", // For condition nodes - which variable to check
+    "actionType": "save_lead|send_email|book_appointment|webhook", // For action nodes
+    "description": "What this node does"
+  }
+}
+
+EDGE STRUCTURE:
+{
+  "id": "edge-id",
+  "source": "source-node-id",
+  "target": "target-node-id",
+  "sourceHandle": "branch-0|branch-1|default", // For condition branches
+  "label": "Optional label for the edge"
+}
+
+POSITIONING RULES:
+- Start node at y=50
+- Each row increment y by 120
+- Single path: x=400
+- Two branches: x=200 and x=600
+- Three branches: x=100, x=400, x=700
+- Always center the flow
+
+BEST PRACTICES:
+- Always start with "start" node and end with "end" node
+- Use emojis in messages to be friendly (🎉 ✅ 👋 📧 📞 🌍)
+- Keep messages concise but helpful
+- Use meaningful variable names (email, phone, name, budget, etc.)
+- Every node must be connected via edges
+- Conditions must have branches for different outcomes
+
+Return ONLY valid JSON, no markdown code blocks, no explanations."""
+
+
+# ============================================
+# STATIC ROUTES FIRST (before dynamic {flow_id})
+# ============================================
+
+@router.post("/generate")
+async def generate_flow_with_ai(
+    data: AIFlowGenerateRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new conversation flow."""
-    # Verify agent exists and belongs to user's workspace
+    """Generate a conversation flow using AI from natural language prompt."""
+    
+    # Verify agent exists
     agent_result = await db.execute(
         select(Agent).where(
             and_(
@@ -113,320 +161,141 @@ async def create_flow(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
-    # Create default start node if no nodes provided
-    default_nodes = data.nodes if data.nodes else [
-        {
-            "id": "start-1",
-            "type": "start",
-            "position": {"x": 250, "y": 50},
-            "data": {"label": "Start"}
-        }
-    ]
-    
-    flow = ConversationFlow(
-        name=data.name,
-        description=data.description,
-        nodes=default_nodes,
-        edges=data.edges or [],
-        agent_id=data.agent_id,
-        workspace_id=current_user.current_workspace_id,
-    )
-    db.add(flow)
-    await db.commit()
-    await db.refresh(flow)
-    
-    return FlowResponse(
-        id=flow.id,
-        name=flow.name,
-        description=flow.description,
-        nodes=flow.nodes,
-        edges=flow.edges,
-        viewport=flow.viewport,
-        is_active=flow.is_active,
-        is_draft=flow.is_draft,
-        version=flow.version,
-        agent_id=flow.agent_id,
-        created_at=flow.created_at,
-        updated_at=flow.updated_at,
-    )
+    # Build prompt for AI
+    user_prompt = f"""Create a conversation flow for:
 
+{data.prompt}
 
-@router.get("", response_model=List[FlowResponse])
-async def list_flows(
-    agent_id: Optional[UUID] = None,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """List all conversation flows."""
-    query = select(ConversationFlow).where(
-        and_(
-            ConversationFlow.workspace_id == current_user.current_workspace_id,
-            ConversationFlow.is_deleted == False,
+Agent: {agent.name}
+Agent Description: {agent.description or 'AI Assistant'}
+
+Generate a complete flow with proper positioning. Return only valid JSON."""
+
+    try:
+        # Call LLM to generate flow
+        response = await llm_service.generate_response(
+            messages=[{"role": "user", "content": user_prompt}],
+            system_prompt=AI_FLOW_SYSTEM_PROMPT,
+            model=agent.llm_model or "llama-3.3-70b-versatile",
+            provider=agent.llm_provider or "groq",
+            temperature=0.2,
+            max_tokens=4000,
         )
-    )
-    
-    if agent_id:
-        query = query.where(ConversationFlow.agent_id == agent_id)
-    
-    query = query.order_by(ConversationFlow.created_at.desc())
-    
-    result = await db.execute(query)
-    flows = result.scalars().all()
-    
-    return [
-        FlowResponse(
-            id=f.id,
-            name=f.name,
-            description=f.description,
-            nodes=f.nodes,
-            edges=f.edges,
-            viewport=f.viewport,
-            is_active=f.is_active,
-            is_draft=f.is_draft,
-            version=f.version,
-            agent_id=f.agent_id,
-            created_at=f.created_at,
-            updated_at=f.updated_at,
+        
+        # Clean up response
+        response = response.strip()
+        if response.startswith("```json"):
+            response = response[7:]
+        if response.startswith("```"):
+            response = response[3:]
+        if response.endswith("```"):
+            response = response[:-3]
+        response = response.strip()
+        
+        # Parse JSON
+        try:
+            flow_data = json.loads(response)
+        except json.JSONDecodeError:
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                flow_data = json.loads(json_match.group())
+            else:
+                raise HTTPException(status_code=500, detail="Failed to parse AI response")
+        
+        # Validate
+        if "nodes" not in flow_data or "edges" not in flow_data:
+            raise HTTPException(status_code=500, detail="Invalid flow structure")
+        
+        # Create flow name
+        flow_name = data.flow_name or flow_data.get("name", f"AI Flow - {datetime.utcnow().strftime('%H:%M')}")
+        
+        # Save to database
+        flow = ConversationFlow(
+            name=flow_name,
+            description=flow_data.get("description", data.prompt[:200]),
+            nodes=flow_data["nodes"],
+            edges=flow_data["edges"],
+            agent_id=data.agent_id,
+            workspace_id=current_user.current_workspace_id,
+            is_draft=True,
         )
-        for f in flows
-    ]
-
-
-@router.get("/{flow_id}", response_model=FlowResponse)
-async def get_flow(
-    flow_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get a specific conversation flow."""
-    result = await db.execute(
-        select(ConversationFlow).where(
-            and_(
-                ConversationFlow.id == flow_id,
-                ConversationFlow.workspace_id == current_user.current_workspace_id,
-                ConversationFlow.is_deleted == False,
-            )
-        )
-    )
-    flow = result.scalar_one_or_none()
-    
-    if not flow:
-        raise HTTPException(status_code=404, detail="Flow not found")
-    
-    return FlowResponse(
-        id=flow.id,
-        name=flow.name,
-        description=flow.description,
-        nodes=flow.nodes,
-        edges=flow.edges,
-        viewport=flow.viewport,
-        is_active=flow.is_active,
-        is_draft=flow.is_draft,
-        version=flow.version,
-        agent_id=flow.agent_id,
-        created_at=flow.created_at,
-        updated_at=flow.updated_at,
-    )
-
-
-@router.patch("/{flow_id}", response_model=FlowResponse)
-async def update_flow(
-    flow_id: UUID,
-    data: FlowUpdateRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Update a conversation flow."""
-    result = await db.execute(
-        select(ConversationFlow).where(
-            and_(
-                ConversationFlow.id == flow_id,
-                ConversationFlow.workspace_id == current_user.current_workspace_id,
-                ConversationFlow.is_deleted == False,
-            )
-        )
-    )
-    flow = result.scalar_one_or_none()
-    
-    if not flow:
-        raise HTTPException(status_code=404, detail="Flow not found")
-    
-    # Update fields
-    if data.name is not None:
-        flow.name = data.name
-    if data.description is not None:
-        flow.description = data.description
-    if data.nodes is not None:
-        flow.nodes = data.nodes
-    if data.edges is not None:
-        flow.edges = data.edges
-    if data.viewport is not None:
-        flow.viewport = data.viewport
-    if data.is_active is not None:
-        flow.is_active = data.is_active
-    if data.is_draft is not None:
-        flow.is_draft = data.is_draft
-    
-    flow.updated_at = datetime.utcnow()
-    
-    await db.commit()
-    await db.refresh(flow)
-    
-    return FlowResponse(
-        id=flow.id,
-        name=flow.name,
-        description=flow.description,
-        nodes=flow.nodes,
-        edges=flow.edges,
-        viewport=flow.viewport,
-        is_active=flow.is_active,
-        is_draft=flow.is_draft,
-        version=flow.version,
-        agent_id=flow.agent_id,
-        created_at=flow.created_at,
-        updated_at=flow.updated_at,
-    )
-
-
-@router.delete("/{flow_id}")
-async def delete_flow(
-    flow_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Delete a conversation flow."""
-    result = await db.execute(
-        select(ConversationFlow).where(
-            and_(
-                ConversationFlow.id == flow_id,
-                ConversationFlow.workspace_id == current_user.current_workspace_id,
-            )
-        )
-    )
-    flow = result.scalar_one_or_none()
-    
-    if not flow:
-        raise HTTPException(status_code=404, detail="Flow not found")
-    
-    flow.is_deleted = True
-    flow.updated_at = datetime.utcnow()
-    await db.commit()
-    
-    return {"message": "Flow deleted successfully"}
-
-
-@router.post("/{flow_id}/duplicate", response_model=FlowResponse)
-async def duplicate_flow(
-    flow_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Duplicate a conversation flow."""
-    result = await db.execute(
-        select(ConversationFlow).where(
-            and_(
-                ConversationFlow.id == flow_id,
-                ConversationFlow.workspace_id == current_user.current_workspace_id,
-                ConversationFlow.is_deleted == False,
-            )
-        )
-    )
-    original = result.scalar_one_or_none()
-    
-    if not original:
-        raise HTTPException(status_code=404, detail="Flow not found")
-    
-    # Create duplicate
-    new_flow = ConversationFlow(
-        name=f"{original.name} (Copy)",
-        description=original.description,
-        nodes=original.nodes,
-        edges=original.edges,
-        viewport=original.viewport,
-        agent_id=original.agent_id,
-        workspace_id=current_user.current_workspace_id,
-        is_draft=True,
-        is_active=False,
-    )
-    db.add(new_flow)
-    await db.commit()
-    await db.refresh(new_flow)
-    
-    return FlowResponse(
-        id=new_flow.id,
-        name=new_flow.name,
-        description=new_flow.description,
-        nodes=new_flow.nodes,
-        edges=new_flow.edges,
-        viewport=new_flow.viewport,
-        is_active=new_flow.is_active,
-        is_draft=new_flow.is_draft,
-        version=new_flow.version,
-        agent_id=new_flow.agent_id,
-        created_at=new_flow.created_at,
-        updated_at=new_flow.updated_at,
-    )
-
-
-@router.post("/{flow_id}/activate")
-async def activate_flow(
-    flow_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Activate a flow and deactivate others for the same agent."""
-    result = await db.execute(
-        select(ConversationFlow).where(
-            and_(
-                ConversationFlow.id == flow_id,
-                ConversationFlow.workspace_id == current_user.current_workspace_id,
-                ConversationFlow.is_deleted == False,
-            )
-        )
-    )
-    flow = result.scalar_one_or_none()
-    
-    if not flow:
-        raise HTTPException(status_code=404, detail="Flow not found")
-    
-    # Deactivate other flows for the same agent
-    other_flows = await db.execute(
-        select(ConversationFlow).where(
-            and_(
-                ConversationFlow.agent_id == flow.agent_id,
-                ConversationFlow.id != flow_id,
-                ConversationFlow.is_active == True,
-            )
-        )
-    )
-    for other in other_flows.scalars().all():
-        other.is_active = False
-    
-    # Activate this flow
-    flow.is_active = True
-    flow.is_draft = False
-    flow.updated_at = datetime.utcnow()
-    
-    # Update agent's conversation_flow field
-    agent_result = await db.execute(
-        select(Agent).where(Agent.id == flow.agent_id)
-    )
-    agent = agent_result.scalar_one_or_none()
-    if agent:
-        agent.conversation_flow = {
-            "flow_id": str(flow.id),
+        db.add(flow)
+        await db.commit()
+        await db.refresh(flow)
+        
+        return {
+            "id": flow.id,
+            "name": flow.name,
+            "description": flow.description,
             "nodes": flow.nodes,
             "edges": flow.edges,
+            "message": "✨ Flow generated successfully!",
+            "node_count": len(flow.nodes),
+            "edge_count": len(flow.edges),
         }
-    
-    await db.commit()
-    
-    return {"message": "Flow activated successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate flow: {str(e)}")
 
 
-# ============================================
-# FLOW TEMPLATES
-# ============================================
+@router.post("/generate/preview")
+async def preview_generated_flow(
+    data: AIFlowGenerateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Preview a flow without saving."""
+    
+    agent_result = await db.execute(
+        select(Agent).where(
+            and_(
+                Agent.id == data.agent_id,
+                Agent.workspace_id == current_user.current_workspace_id,
+            )
+        )
+    )
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    user_prompt = f"""Create a conversation flow for:
+
+{data.prompt}
+
+Agent: {agent.name}
+
+Return only valid JSON."""
+
+    try:
+        response = await llm_service.generate_response(
+            messages=[{"role": "user", "content": user_prompt}],
+            system_prompt=AI_FLOW_SYSTEM_PROMPT,
+            model=agent.llm_model or "llama-3.3-70b-versatile",
+            provider=agent.llm_provider or "groq",
+            temperature=0.2,
+            max_tokens=4000,
+        )
+        
+        response = response.strip()
+        if "```" in response:
+            response = response.replace("```json", "").replace("```", "").strip()
+        
+        flow_data = json.loads(response)
+        
+        return {
+            "name": flow_data.get("name", "Generated Flow"),
+            "description": flow_data.get("description", ""),
+            "nodes": flow_data.get("nodes", []),
+            "edges": flow_data.get("edges", []),
+            "preview": True,
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/templates/list")
 async def list_flow_templates(
@@ -440,91 +309,36 @@ async def list_flow_templates(
             "description": "Simple welcome and qualification flow",
             "category": "general",
             "nodes": [
-                {"id": "start-1", "type": "start", "position": {"x": 250, "y": 50}, "data": {"label": "Start"}},
-                {"id": "msg-1", "type": "message", "position": {"x": 250, "y": 150}, "data": {"label": "Welcome", "content": "Hello! Welcome to our service. How can I help you today?"}},
-                {"id": "question-1", "type": "question", "position": {"x": 250, "y": 280}, "data": {"label": "Get Name", "content": "May I know your name?", "variable_name": "user_name", "expected_type": "text"}},
-                {"id": "msg-2", "type": "message", "position": {"x": 250, "y": 410}, "data": {"label": "Personalized Greeting", "content": "Nice to meet you, {{user_name}}! What brings you here today?"}},
-                {"id": "end-1", "type": "end", "position": {"x": 250, "y": 540}, "data": {"label": "End"}}
+                {"id": "start-1", "type": "start", "position": {"x": 400, "y": 50}, "data": {"label": "Start"}},
+                {"id": "msg-1", "type": "message", "position": {"x": 400, "y": 170}, "data": {"label": "Welcome", "message": "Hello! 👋 Welcome to our service."}},
+                {"id": "end-1", "type": "end", "position": {"x": 400, "y": 290}, "data": {"label": "End"}}
             ],
             "edges": [
-                {"id": "e1", "source": "start-1", "target": "msg-1", "type": "smoothstep"},
-                {"id": "e2", "source": "msg-1", "target": "question-1", "type": "smoothstep"},
-                {"id": "e3", "source": "question-1", "target": "msg-2", "type": "smoothstep"},
-                {"id": "e4", "source": "msg-2", "target": "end-1", "type": "smoothstep"}
+                {"id": "e1", "source": "start-1", "target": "msg-1"},
+                {"id": "e2", "source": "msg-1", "target": "end-1"}
             ]
         },
         {
-            "id": "lead-qualification",
-            "name": "Lead Qualification",
-            "description": "Qualify leads with conditional branching",
+            "id": "lead-capture",
+            "name": "Lead Capture",
+            "description": "Capture visitor information",
             "category": "sales",
             "nodes": [
-                {"id": "start-1", "type": "start", "position": {"x": 300, "y": 50}, "data": {"label": "Start"}},
-                {"id": "msg-1", "type": "message", "position": {"x": 300, "y": 150}, "data": {"label": "Welcome", "content": "Hi! I'm here to help you find the right solution. Let me ask a few questions."}},
-                {"id": "question-1", "type": "question", "position": {"x": 300, "y": 280}, "data": {"label": "Company Size", "content": "How many employees does your company have?", "variable_name": "company_size", "expected_type": "choice", "choices": ["1-10", "11-50", "51-200", "200+"]}},
-                {"id": "condition-1", "type": "condition", "position": {"x": 300, "y": 410}, "data": {"label": "Check Size", "conditions": [{"variable": "company_size", "operator": "equals", "value": "200+", "label": "Enterprise"}]}},
-                {"id": "msg-enterprise", "type": "message", "position": {"x": 100, "y": 540}, "data": {"label": "Enterprise Path", "content": "Great! For enterprise clients, we offer dedicated support. Let me connect you with our enterprise team."}},
-                {"id": "msg-standard", "type": "message", "position": {"x": 500, "y": 540}, "data": {"label": "Standard Path", "content": "Perfect! Our standard plans would be great for your team size."}},
-                {"id": "end-1", "type": "end", "position": {"x": 300, "y": 670}, "data": {"label": "End"}}
+                {"id": "start-1", "type": "start", "position": {"x": 400, "y": 50}, "data": {"label": "Start"}},
+                {"id": "msg-1", "type": "message", "position": {"x": 400, "y": 170}, "data": {"label": "Welcome", "message": "Hi! 👋 Let me help you get started."}},
+                {"id": "q-1", "type": "question", "position": {"x": 400, "y": 290}, "data": {"label": "Get Email", "question": "What's your email address?", "inputType": "email", "saveAs": "email"}},
+                {"id": "q-2", "type": "question", "position": {"x": 400, "y": 410}, "data": {"label": "Get Phone", "question": "And your phone number?", "inputType": "tel", "saveAs": "phone"}},
+                {"id": "action-1", "type": "action", "position": {"x": 400, "y": 530}, "data": {"label": "Save Lead", "actionType": "save_lead"}},
+                {"id": "msg-2", "type": "message", "position": {"x": 400, "y": 650}, "data": {"label": "Thanks", "message": "Thanks! 🎉 We'll be in touch soon."}},
+                {"id": "end-1", "type": "end", "position": {"x": 400, "y": 770}, "data": {"label": "End"}}
             ],
             "edges": [
-                {"id": "e1", "source": "start-1", "target": "msg-1", "type": "smoothstep"},
-                {"id": "e2", "source": "msg-1", "target": "question-1", "type": "smoothstep"},
-                {"id": "e3", "source": "question-1", "target": "condition-1", "type": "smoothstep"},
-                {"id": "e4", "source": "condition-1", "target": "msg-enterprise", "sourceHandle": "yes", "type": "smoothstep", "label": "Enterprise"},
-                {"id": "e5", "source": "condition-1", "target": "msg-standard", "sourceHandle": "no", "type": "smoothstep", "label": "Other"},
-                {"id": "e6", "source": "msg-enterprise", "target": "end-1", "type": "smoothstep"},
-                {"id": "e7", "source": "msg-standard", "target": "end-1", "type": "smoothstep"}
-            ]
-        },
-        {
-            "id": "appointment-booking",
-            "name": "Appointment Booking",
-            "description": "Book appointments with availability check",
-            "category": "booking",
-            "nodes": [
-                {"id": "start-1", "type": "start", "position": {"x": 250, "y": 50}, "data": {"label": "Start"}},
-                {"id": "msg-1", "type": "message", "position": {"x": 250, "y": 150}, "data": {"label": "Greeting", "content": "Hello! I can help you book an appointment. What service are you interested in?"}},
-                {"id": "question-1", "type": "question", "position": {"x": 250, "y": 280}, "data": {"label": "Service", "content": "Please select a service:", "variable_name": "service", "expected_type": "choice", "choices": ["Consultation", "Demo", "Support Call", "Other"]}},
-                {"id": "question-2", "type": "question", "position": {"x": 250, "y": 410}, "data": {"label": "Preferred Date", "content": "What date works best for you?", "variable_name": "preferred_date", "expected_type": "text"}},
-                {"id": "question-3", "type": "question", "position": {"x": 250, "y": 540}, "data": {"label": "Email", "content": "Please provide your email for confirmation:", "variable_name": "email", "expected_type": "text"}},
-                {"id": "action-1", "type": "action", "position": {"x": 250, "y": 670}, "data": {"label": "Book Appointment", "action_type": "webhook", "action_config": {"url": "{{webhook_url}}", "method": "POST"}}},
-                {"id": "msg-2", "type": "message", "position": {"x": 250, "y": 800}, "data": {"label": "Confirmation", "content": "Your {{service}} appointment has been requested for {{preferred_date}}. You'll receive a confirmation at {{email}}."}},
-                {"id": "end-1", "type": "end", "position": {"x": 250, "y": 930}, "data": {"label": "End"}}
-            ],
-            "edges": [
-                {"id": "e1", "source": "start-1", "target": "msg-1", "type": "smoothstep"},
-                {"id": "e2", "source": "msg-1", "target": "question-1", "type": "smoothstep"},
-                {"id": "e3", "source": "question-1", "target": "question-2", "type": "smoothstep"},
-                {"id": "e4", "source": "question-2", "target": "question-3", "type": "smoothstep"},
-                {"id": "e5", "source": "question-3", "target": "action-1", "type": "smoothstep"},
-                {"id": "e6", "source": "action-1", "target": "msg-2", "type": "smoothstep"},
-                {"id": "e7", "source": "msg-2", "target": "end-1", "type": "smoothstep"}
-            ]
-        },
-        {
-            "id": "faq-flow",
-            "name": "FAQ Handler",
-            "description": "Handle common questions with branching",
-            "category": "support",
-            "nodes": [
-                {"id": "start-1", "type": "start", "position": {"x": 300, "y": 50}, "data": {"label": "Start"}},
-                {"id": "question-1", "type": "question", "position": {"x": 300, "y": 150}, "data": {"label": "Topic", "content": "What would you like to know about?", "variable_name": "topic", "expected_type": "choice", "choices": ["Pricing", "Features", "Support", "Other"]}},
-                {"id": "condition-1", "type": "condition", "position": {"x": 300, "y": 280}, "data": {"label": "Route Topic", "conditions": [{"variable": "topic", "operator": "equals", "value": "Pricing", "label": "Pricing"}, {"variable": "topic", "operator": "equals", "value": "Features", "label": "Features"}]}},
-                {"id": "msg-pricing", "type": "message", "position": {"x": 50, "y": 410}, "data": {"label": "Pricing Info", "content": "Our plans start at $29/month. We offer Basic, Pro, and Enterprise tiers. Would you like more details?"}},
-                {"id": "msg-features", "type": "message", "position": {"x": 300, "y": 410}, "data": {"label": "Features Info", "content": "Our key features include AI agents, voice calls, chat integration, and analytics. What specific feature interests you?"}},
-                {"id": "msg-other", "type": "message", "position": {"x": 550, "y": 410}, "data": {"label": "Other", "content": "I'd be happy to help! Please describe your question and I'll do my best to assist."}},
-                {"id": "end-1", "type": "end", "position": {"x": 300, "y": 540}, "data": {"label": "End"}}
-            ],
-            "edges": [
-                {"id": "e1", "source": "start-1", "target": "question-1", "type": "smoothstep"},
-                {"id": "e2", "source": "question-1", "target": "condition-1", "type": "smoothstep"},
-                {"id": "e3", "source": "condition-1", "target": "msg-pricing", "sourceHandle": "condition-0", "type": "smoothstep", "label": "Pricing"},
-                {"id": "e4", "source": "condition-1", "target": "msg-features", "sourceHandle": "condition-1", "type": "smoothstep", "label": "Features"},
-                {"id": "e5", "source": "condition-1", "target": "msg-other", "sourceHandle": "default", "type": "smoothstep", "label": "Other"},
-                {"id": "e6", "source": "msg-pricing", "target": "end-1", "type": "smoothstep"},
-                {"id": "e7", "source": "msg-features", "target": "end-1", "type": "smoothstep"},
-                {"id": "e8", "source": "msg-other", "target": "end-1", "type": "smoothstep"}
+                {"id": "e1", "source": "start-1", "target": "msg-1"},
+                {"id": "e2", "source": "msg-1", "target": "q-1"},
+                {"id": "e3", "source": "q-1", "target": "q-2"},
+                {"id": "e4", "source": "q-2", "target": "action-1"},
+                {"id": "e5", "source": "action-1", "target": "msg-2"},
+                {"id": "e6", "source": "msg-2", "target": "end-1"}
             ]
         }
     ]
@@ -540,7 +354,6 @@ async def use_flow_template(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new flow from a template."""
-    # Get templates
     templates_response = await list_flow_templates(current_user)
     templates = templates_response["templates"]
     
@@ -548,7 +361,6 @@ async def use_flow_template(
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     
-    # Verify agent exists
     agent_result = await db.execute(
         select(Agent).where(
             and_(
@@ -561,7 +373,6 @@ async def use_flow_template(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
-    # Create flow from template
     flow = ConversationFlow(
         name=template["name"],
         description=template["description"],
@@ -579,3 +390,323 @@ async def use_flow_template(
         "name": flow.name,
         "message": "Flow created from template"
     }
+
+
+# ============================================
+# CRUD ROUTES (List and Create first)
+# ============================================
+
+@router.get("")
+async def list_flows(
+    agent_id: Optional[UUID] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all conversation flows."""
+    query = select(ConversationFlow).where(
+        and_(
+            ConversationFlow.workspace_id == current_user.current_workspace_id,
+            ConversationFlow.is_deleted == False,
+        )
+    )
+    
+    if agent_id:
+        query = query.where(ConversationFlow.agent_id == agent_id)
+    
+    result = await db.execute(query.order_by(ConversationFlow.created_at.desc()))
+    flows = result.scalars().all()
+    
+    return [
+        {
+            "id": f.id,
+            "name": f.name,
+            "description": f.description,
+            "nodes": f.nodes or [],
+            "edges": f.edges or [],
+            "viewport": f.viewport or {"x": 0, "y": 0, "zoom": 1},
+            "is_active": f.is_active,
+            "is_draft": f.is_draft,
+            "version": f.version or "1.0",
+            "agent_id": f.agent_id,
+            "created_at": f.created_at,
+            "updated_at": f.updated_at,
+        }
+        for f in flows
+    ]
+
+
+@router.post("")
+async def create_flow(
+    data: FlowCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new conversation flow."""
+    agent_result = await db.execute(
+        select(Agent).where(
+            and_(
+                Agent.id == data.agent_id,
+                Agent.workspace_id == current_user.current_workspace_id,
+                Agent.is_deleted == False,
+            )
+        )
+    )
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    default_nodes = data.nodes if data.nodes else [
+        {"id": "start-1", "type": "start", "position": {"x": 400, "y": 50}, "data": {"label": "Start"}}
+    ]
+    
+    flow = ConversationFlow(
+        name=data.name,
+        description=data.description,
+        nodes=default_nodes,
+        edges=data.edges or [],
+        agent_id=data.agent_id,
+        workspace_id=current_user.current_workspace_id,
+    )
+    db.add(flow)
+    await db.commit()
+    await db.refresh(flow)
+    
+    return {
+        "id": flow.id,
+        "name": flow.name,
+        "description": flow.description,
+        "nodes": flow.nodes,
+        "edges": flow.edges,
+        "viewport": flow.viewport or {"x": 0, "y": 0, "zoom": 1},
+        "is_active": flow.is_active,
+        "is_draft": flow.is_draft,
+        "version": flow.version or "1.0",
+        "agent_id": flow.agent_id,
+        "created_at": flow.created_at,
+        "updated_at": flow.updated_at,
+    }
+
+
+# ============================================
+# DYNAMIC ROUTES (with {flow_id}) - MUST BE LAST
+# ============================================
+
+@router.get("/{flow_id}")
+async def get_flow(
+    flow_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a specific flow."""
+    result = await db.execute(
+        select(ConversationFlow).where(
+            and_(
+                ConversationFlow.id == flow_id,
+                ConversationFlow.workspace_id == current_user.current_workspace_id,
+                ConversationFlow.is_deleted == False,
+            )
+        )
+    )
+    flow = result.scalar_one_or_none()
+    
+    if not flow:
+        raise HTTPException(status_code=404, detail="Flow not found")
+    
+    return {
+        "id": flow.id,
+        "name": flow.name,
+        "description": flow.description,
+        "nodes": flow.nodes or [],
+        "edges": flow.edges or [],
+        "viewport": flow.viewport or {"x": 0, "y": 0, "zoom": 1},
+        "is_active": flow.is_active,
+        "is_draft": flow.is_draft,
+        "version": flow.version or "1.0",
+        "agent_id": flow.agent_id,
+        "created_at": flow.created_at,
+        "updated_at": flow.updated_at,
+    }
+
+
+@router.patch("/{flow_id}")
+async def update_flow(
+    flow_id: UUID,
+    data: FlowUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a flow."""
+    result = await db.execute(
+        select(ConversationFlow).where(
+            and_(
+                ConversationFlow.id == flow_id,
+                ConversationFlow.workspace_id == current_user.current_workspace_id,
+                ConversationFlow.is_deleted == False,
+            )
+        )
+    )
+    flow = result.scalar_one_or_none()
+    
+    if not flow:
+        raise HTTPException(status_code=404, detail="Flow not found")
+    
+    if data.name is not None:
+        flow.name = data.name
+    if data.description is not None:
+        flow.description = data.description
+    if data.nodes is not None:
+        flow.nodes = data.nodes
+    if data.edges is not None:
+        flow.edges = data.edges
+    if data.viewport is not None:
+        flow.viewport = data.viewport
+    if data.is_active is not None:
+        flow.is_active = data.is_active
+    if data.is_draft is not None:
+        flow.is_draft = data.is_draft
+    
+    flow.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(flow)
+    
+    return {
+        "id": flow.id,
+        "name": flow.name,
+        "description": flow.description,
+        "nodes": flow.nodes or [],
+        "edges": flow.edges or [],
+        "viewport": flow.viewport or {"x": 0, "y": 0, "zoom": 1},
+        "is_active": flow.is_active,
+        "is_draft": flow.is_draft,
+        "version": flow.version or "1.0",
+        "agent_id": flow.agent_id,
+        "created_at": flow.created_at,
+        "updated_at": flow.updated_at,
+    }
+
+
+@router.delete("/{flow_id}")
+async def delete_flow(
+    flow_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a flow."""
+    result = await db.execute(
+        select(ConversationFlow).where(
+            and_(
+                ConversationFlow.id == flow_id,
+                ConversationFlow.workspace_id == current_user.current_workspace_id,
+            )
+        )
+    )
+    flow = result.scalar_one_or_none()
+    
+    if not flow:
+        raise HTTPException(status_code=404, detail="Flow not found")
+    
+    flow.is_deleted = True
+    flow.updated_at = datetime.utcnow()
+    await db.commit()
+    
+    return {"message": "Flow deleted"}
+
+
+@router.post("/{flow_id}/duplicate")
+async def duplicate_flow(
+    flow_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Duplicate a flow."""
+    result = await db.execute(
+        select(ConversationFlow).where(
+            and_(
+                ConversationFlow.id == flow_id,
+                ConversationFlow.workspace_id == current_user.current_workspace_id,
+                ConversationFlow.is_deleted == False,
+            )
+        )
+    )
+    original = result.scalar_one_or_none()
+    
+    if not original:
+        raise HTTPException(status_code=404, detail="Flow not found")
+    
+    new_flow = ConversationFlow(
+        name=f"{original.name} (Copy)",
+        description=original.description,
+        nodes=original.nodes,
+        edges=original.edges,
+        viewport=original.viewport,
+        agent_id=original.agent_id,
+        workspace_id=current_user.current_workspace_id,
+        is_draft=True,
+    )
+    db.add(new_flow)
+    await db.commit()
+    await db.refresh(new_flow)
+    
+    return {
+        "id": new_flow.id,
+        "name": new_flow.name,
+        "description": new_flow.description,
+        "nodes": new_flow.nodes or [],
+        "edges": new_flow.edges or [],
+        "viewport": new_flow.viewport or {"x": 0, "y": 0, "zoom": 1},
+        "is_active": new_flow.is_active,
+        "is_draft": new_flow.is_draft,
+        "version": new_flow.version or "1.0",
+        "agent_id": new_flow.agent_id,
+        "created_at": new_flow.created_at,
+        "updated_at": new_flow.updated_at,
+    }
+
+
+@router.post("/{flow_id}/activate")
+async def activate_flow(
+    flow_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Activate a flow."""
+    result = await db.execute(
+        select(ConversationFlow).where(
+            and_(
+                ConversationFlow.id == flow_id,
+                ConversationFlow.workspace_id == current_user.current_workspace_id,
+                ConversationFlow.is_deleted == False,
+            )
+        )
+    )
+    flow = result.scalar_one_or_none()
+    
+    if not flow:
+        raise HTTPException(status_code=404, detail="Flow not found")
+    
+    # Deactivate other flows
+    other_flows = await db.execute(
+        select(ConversationFlow).where(
+            and_(
+                ConversationFlow.agent_id == flow.agent_id,
+                ConversationFlow.id != flow_id,
+                ConversationFlow.is_active == True,
+            )
+        )
+    )
+    for other in other_flows.scalars().all():
+        other.is_active = False
+    
+    flow.is_active = True
+    flow.is_draft = False
+    flow.updated_at = datetime.utcnow()
+    
+    # Update agent
+    agent_result = await db.execute(select(Agent).where(Agent.id == flow.agent_id))
+    agent = agent_result.scalar_one_or_none()
+    if agent:
+        agent.conversation_flow = {"flow_id": str(flow.id), "nodes": flow.nodes, "edges": flow.edges}
+    
+    await db.commit()
+    
+    return {"message": "Flow activated"}

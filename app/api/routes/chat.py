@@ -68,6 +68,31 @@ class MessageResponse(BaseModel):
 
 
 # ============================================
+# HELPER FUNCTIONS
+# ============================================
+
+def get_message_count(conversation) -> int:
+    """Safely get message count as integer."""
+    if conversation.message_count is None:
+        return 0
+    if isinstance(conversation.message_count, int):
+        return conversation.message_count
+    try:
+        return int(conversation.message_count)
+    except (ValueError, TypeError):
+        return 0
+
+
+def set_message_count(conversation, count: int):
+    """Safely set message count."""
+    # Try to set as integer first, fall back to string
+    try:
+        conversation.message_count = count
+    except:
+        conversation.message_count = str(count)
+
+
+# ============================================
 # ROUTES
 # ============================================
 
@@ -124,7 +149,9 @@ async def send_message(
             workspace_id=current_user.current_workspace_id,
             conversation_type=ConversationType.CHAT,
             status=ConversationStatus.ACTIVE,
-            visitor_id=str(current_user.id),  # Store user ID as visitor_id
+            visitor_id=str(current_user.id),
+            channel="chat",
+            message_count=0,
         )
         db.add(conversation)
         await db.flush()
@@ -178,7 +205,8 @@ async def send_message(
     
     # Update conversation
     conversation.updated_at = datetime.utcnow()
-    conversation.message_count = str(int(conversation.message_count or "0") + 2)
+    current_count = get_message_count(conversation)
+    set_message_count(conversation, current_count + 2)
     
     await db.commit()
     
@@ -238,6 +266,8 @@ async def send_message_stream(
             conversation_type=ConversationType.CHAT,
             status=ConversationStatus.ACTIVE,
             visitor_id=str(current_user.id),
+            channel="chat",
+            message_count=0,
         )
         db.add(conversation)
         await db.flush()
@@ -348,10 +378,10 @@ async def list_conversations(
             id=conv.id,
             agent_id=conv.agent_id,
             agent_name=agent.name if agent else "Unknown",
-            status=conv.status.value,
+            status=conv.status.value if conv.status else "active",
             created_at=conv.created_at,
             updated_at=conv.updated_at,
-            message_count=int(conv.message_count or "0"),
+            message_count=get_message_count(conv),
         ))
     
     return response

@@ -1,5 +1,6 @@
 """
 ConvoHubAI - Application Configuration
+Updated with cost-optimised defaults and SignalWire support
 """
 
 from pydantic_settings import BaseSettings
@@ -42,35 +43,78 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
 
-    # AI Services
+    # ===========================================
+    # AI SERVICES
+    # ===========================================
+    
+    # OpenAI (optional - expensive!)
     openai_api_key: str = ""
+    
+    # Anthropic (optional)
     anthropic_api_key: str = ""
+    
+    # Groq - FREE LLM & STT!
+    groq_api_key: str = ""
+    
+    # Deepgram - For TTS (Aura) and backup STT
+    deepgram_api_key: str = ""
+
+    # ===========================================
+    # DEFAULT PROVIDERS (Cost Optimised!)
+    # ===========================================
+    default_llm_provider: str = "groq"
+    default_llm_model: str = "llama-3.3-70b-versatile"
+    default_stt_provider: str = "groq"  # FREE Whisper!
+    default_tts_provider: str = "deepgram"  # Cheapest quality TTS
 
     # Pinecone
     pinecone_api_key: str = ""
     pinecone_environment: str = "us-east-1"
     pinecone_index_name: str = "convohubai-kb"
 
-    # Twilio
+    # ===========================================
+    # TELEPHONY
+    # ===========================================
+    
+    # Twilio (legacy - expensive)
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_phone_number: str = ""
+    
+    # SignalWire (cheaper alternative!)
+    signalwire_project_id: str = ""
+    signalwire_api_token: str = ""
+    signalwire_space_url: str = ""
+    signalwire_signing_key: str = ""
+    signalwire_phone_number: str = ""
+    
+    # Telnyx (another cheap alternative)
+    telnyx_api_key: str = ""
+    telnyx_public_key: str = ""
+    telnyx_connection_id: str = ""
+    telnyx_phone_number: str = ""
 
-    # Retell AI
+    # Retell AI (not needed - we built our own!)
     retell_api_key: str = ""
 
-    # Stripe
+    # ===========================================
+    # PAYMENTS
+    # ===========================================
     stripe_secret_key: str = ""
     stripe_publishable_key: str = ""
     stripe_webhook_secret: str = ""
 
+    # ===========================================
     # AWS
+    # ===========================================
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
     aws_region: str = "us-east-1"
     s3_bucket_name: str = ""
 
-    # Email
+    # ===========================================
+    # EMAIL
+    # ===========================================
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""
@@ -78,21 +122,12 @@ class Settings(BaseSettings):
     emails_from_email: str = ""
     emails_from_name: str = "ConvoHubAI"
 
-    # Twilio
-    twilio_account_sid: str = ""
-    twilio_auth_token: str = ""
-    twilio_phone_number: str = ""
-    
-    # Deepgram
-    deepgram_api_key: str = ""
-
-    # LiveKit Video
+    # ===========================================
+    # LIVEKIT
+    # ===========================================
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
     livekit_url: str = "ws://localhost:7880"
-
-    # Groq (FREE AI)
-    groq_api_key: str = ""
 
     # App URL
     app_base_url: str = "http://localhost:8000"
@@ -102,6 +137,8 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        # Allow extra fields (for flexibility)
+        extra = "ignore"
 
 
 @lru_cache()

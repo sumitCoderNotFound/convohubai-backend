@@ -1,11 +1,12 @@
 """
 ConvoHubAI - LLM Service
-Handles integration with OpenAI, Anthropic, and other LLM providers
+Handles integration with OpenAI, Anthropic, Groq (FREE), and Deepgram
 """
 import os
 from typing import AsyncGenerator, Optional, List, Dict, Any
 from openai import AsyncOpenAI
 import anthropic
+import httpx
 from app.core.config import settings
 
 
@@ -22,6 +23,18 @@ class LLMService:
         self.anthropic_client = None
         if settings.anthropic_api_key:
             self.anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        
+        # Initialize Groq client (uses OpenAI-compatible API)
+        self.groq_client = None
+        groq_api_key = getattr(settings, 'groq_api_key', None) or os.getenv('GROQ_API_KEY')
+        if groq_api_key:
+            self.groq_client = AsyncOpenAI(
+                api_key=groq_api_key,
+                base_url="https://api.groq.com/openai/v1"
+            )
+        
+        # Deepgram API key
+        self.deepgram_api_key = getattr(settings, 'deepgram_api_key', None) or os.getenv('DEEPGRAM_API_KEY')
     
     async def generate_response(
         self,
@@ -39,7 +52,7 @@ class LLMService:
             messages: List of message dicts with 'role' and 'content'
             system_prompt: Optional system prompt to prepend
             model: Model name to use
-            provider: 'openai' or 'anthropic'
+            provider: 'openai', 'anthropic', 'groq', or 'deepgram'
             temperature: Sampling temperature
             max_tokens: Maximum tokens in response
             
@@ -54,6 +67,17 @@ class LLMService:
             return await self._anthropic_generate(
                 messages, system_prompt, model, temperature, max_tokens
             )
+        elif provider == "groq":
+            return await self._groq_generate(
+                messages, system_prompt, model, temperature, max_tokens
+            )
+        elif provider == "deepgram":
+            # Deepgram is primarily STT/TTS, fallback to Groq for LLM
+            if self.groq_client:
+                return await self._groq_generate(
+                    messages, system_prompt, "llama-3.3-70b-versatile", temperature, max_tokens
+                )
+            raise ValueError("Deepgram requires Groq as fallback for LLM")
         else:
             raise ValueError(f"Unknown provider: {provider}")
     
@@ -81,6 +105,20 @@ class LLMService:
                 messages, system_prompt, model, temperature, max_tokens
             ):
                 yield chunk
+        elif provider == "groq":
+            async for chunk in self._groq_stream(
+                messages, system_prompt, model, temperature, max_tokens
+            ):
+                yield chunk
+        elif provider == "deepgram":
+            # Fallback to Groq for streaming
+            if self.groq_client:
+                async for chunk in self._groq_stream(
+                    messages, system_prompt, "llama-3.3-70b-versatile", temperature, max_tokens
+                ):
+                    yield chunk
+            else:
+                raise ValueError("Deepgram requires Groq as fallback for LLM")
         else:
             raise ValueError(f"Unknown provider: {provider}")
     
@@ -144,6 +182,87 @@ class LLMService:
         async for chunk in stream:
             if chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
+    
+    # ============================================
+    # Groq Methods (FREE!)
+    # ============================================
+    
+    async def _groq_generate(
+        self,
+        messages: List[Dict[str, str]],
+        system_prompt: Optional[str],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """Generate response using Groq (FREE!)."""
+        if not self.groq_client:
+            raise ValueError("Groq API key not configured. Get FREE key at https://console.groq.com")
+        
+        # Build messages list
+        groq_messages = []
+        if system_prompt:
+            groq_messages.append({"role": "system", "content": system_prompt})
+        groq_messages.extend(messages)
+        
+        # Map model names if needed
+        groq_model = self._map_groq_model(model)
+        
+        response = await self.groq_client.chat.completions.create(
+            model=groq_model,
+            messages=groq_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        
+        return response.choices[0].message.content
+    
+    async def _groq_stream(
+        self,
+        messages: List[Dict[str, str]],
+        system_prompt: Optional[str],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> AsyncGenerator[str, None]:
+        """Stream response using Groq (FREE!)."""
+        if not self.groq_client:
+            raise ValueError("Groq API key not configured. Get FREE key at https://console.groq.com")
+        
+        # Build messages list
+        groq_messages = []
+        if system_prompt:
+            groq_messages.append({"role": "system", "content": system_prompt})
+        groq_messages.extend(messages)
+        
+        # Map model names if needed
+        groq_model = self._map_groq_model(model)
+        
+        stream = await self.groq_client.chat.completions.create(
+            model=groq_model,
+            messages=groq_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+    
+    def _map_groq_model(self, model: str) -> str:
+        """Map model name to Groq model."""
+        model_map = {
+            # Current Groq models
+            "llama-3.3-70b-versatile": "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant": "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768": "mixtral-8x7b-32768",
+            "gemma2-9b-it": "gemma2-9b-it",
+            # Aliases
+            "llama3": "llama-3.3-70b-versatile",
+            "mixtral": "mixtral-8x7b-32768",
+        }
+        return model_map.get(model, model)
     
     # ============================================
     # Anthropic Methods
@@ -217,6 +336,35 @@ class LLMService:
             "claude-3-haiku": "claude-3-haiku-20240307",
         }
         return model_map.get(model, model)
+    
+    # ============================================
+    # Utility Methods
+    # ============================================
+    
+    def get_available_providers(self) -> List[str]:
+        """Get list of configured providers."""
+        providers = []
+        if self.openai_client:
+            providers.append("openai")
+        if self.groq_client:
+            providers.append("groq")
+        if self.anthropic_client:
+            providers.append("anthropic")
+        if self.deepgram_api_key:
+            providers.append("deepgram")
+        return providers
+    
+    def is_provider_available(self, provider: str) -> bool:
+        """Check if a provider is configured."""
+        if provider == "openai":
+            return self.openai_client is not None
+        elif provider == "groq":
+            return self.groq_client is not None
+        elif provider == "anthropic":
+            return self.anthropic_client is not None
+        elif provider == "deepgram":
+            return self.deepgram_api_key is not None
+        return False
 
 
 # Singleton instance

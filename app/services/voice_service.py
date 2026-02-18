@@ -9,6 +9,10 @@ import asyncio
 import httpx
 from typing import Optional, Dict, Any
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 
 class VoiceService:
@@ -21,12 +25,25 @@ class VoiceService:
         self.deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         
+        # Validate credentials
+        if not self.twilio_account_sid:
+            print("⚠️  WARNING: TWILIO_ACCOUNT_SID not found in environment!")
+        if not self.twilio_auth_token:
+            print("⚠️  WARNING: TWILIO_AUTH_TOKEN not found in environment!")
+        
+    def _get_twilio_auth(self):
+        """Get Twilio auth tuple, raise error if not configured."""
+        if not self.twilio_account_sid or not self.twilio_auth_token:
+            raise Exception("Twilio credentials not configured. Please set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in .env")
+        return (self.twilio_account_sid, self.twilio_auth_token)
+        
     # ============================================
     # TWILIO - Phone Number Management
     # ============================================
     
     async def list_available_numbers(self, country: str = "US", area_code: str = None) -> list:
         """List available phone numbers to purchase."""
+        auth = self._get_twilio_auth()
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_account_sid}/AvailablePhoneNumbers/{country}/Local.json"
         
         params = {"VoiceEnabled": "true", "SmsEnabled": "true"}
@@ -37,7 +54,7 @@ class VoiceService:
             response = await client.get(
                 url,
                 params=params,
-                auth=(self.twilio_account_sid, self.twilio_auth_token)
+                auth=auth
             )
             
             if response.status_code == 200:
@@ -48,6 +65,7 @@ class VoiceService:
     
     async def buy_phone_number(self, phone_number: str, webhook_url: str) -> dict:
         """Purchase a phone number and configure webhook."""
+        auth = self._get_twilio_auth()
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_account_sid}/IncomingPhoneNumbers.json"
         
         async with httpx.AsyncClient() as client:
@@ -60,7 +78,7 @@ class VoiceService:
                     "StatusCallback": f"{webhook_url}/status",
                     "StatusCallbackMethod": "POST",
                 },
-                auth=(self.twilio_account_sid, self.twilio_auth_token)
+                auth=auth
             )
             
             if response.status_code == 201:
@@ -70,12 +88,13 @@ class VoiceService:
     
     async def list_owned_numbers(self) -> list:
         """List all owned phone numbers."""
+        auth = self._get_twilio_auth()
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_account_sid}/IncomingPhoneNumbers.json"
         
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 url,
-                auth=(self.twilio_account_sid, self.twilio_auth_token)
+                auth=auth
             )
             
             if response.status_code == 200:
@@ -86,6 +105,7 @@ class VoiceService:
     
     async def update_phone_number_webhook(self, phone_sid: str, webhook_url: str) -> dict:
         """Update webhook URL for a phone number."""
+        auth = self._get_twilio_auth()
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_account_sid}/IncomingPhoneNumbers/{phone_sid}.json"
         
         async with httpx.AsyncClient() as client:
@@ -95,7 +115,7 @@ class VoiceService:
                     "VoiceUrl": webhook_url,
                     "VoiceMethod": "POST",
                 },
-                auth=(self.twilio_account_sid, self.twilio_auth_token)
+                auth=auth
             )
             
             if response.status_code == 200:
@@ -105,12 +125,13 @@ class VoiceService:
     
     async def release_phone_number(self, phone_sid: str) -> bool:
         """Release (delete) a phone number."""
+        auth = self._get_twilio_auth()
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_account_sid}/IncomingPhoneNumbers/{phone_sid}.json"
         
         async with httpx.AsyncClient() as client:
             response = await client.delete(
                 url,
-                auth=(self.twilio_account_sid, self.twilio_auth_token)
+                auth=auth
             )
             
             return response.status_code == 204
@@ -121,7 +142,11 @@ class VoiceService:
     
     async def make_call(self, to_number: str, from_number: str, webhook_url: str) -> dict:
         """Initiate an outbound call."""
+        auth = self._get_twilio_auth()
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_account_sid}/Calls.json"
+        
+        print(f"📞 Making call: {from_number} → {to_number}")
+        print(f"📍 Webhook URL: {webhook_url}")
         
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -131,28 +156,32 @@ class VoiceService:
                     "From": from_number,
                     "Url": webhook_url,
                     "Method": "POST",
-                    "StatusCallback": f"{webhook_url}/status",
+                    "StatusCallback": f"{webhook_url.rsplit('/', 1)[0]}/status/{to_number.replace('+', '')}",
                     "StatusCallbackMethod": "POST",
                     "StatusCallbackEvent": ["initiated", "ringing", "answered", "completed"],
                     "Record": "true",
                 },
-                auth=(self.twilio_account_sid, self.twilio_auth_token)
+                auth=auth
             )
             
             if response.status_code == 201:
-                return response.json()
+                data = response.json()
+                print(f"✅ Call initiated: {data.get('sid')}")
+                return data
             else:
+                print(f"❌ Call failed: {response.text}")
                 raise Exception(f"Failed to make call: {response.text}")
     
     async def end_call(self, call_sid: str) -> dict:
         """End an active call."""
+        auth = self._get_twilio_auth()
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_account_sid}/Calls/{call_sid}.json"
         
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 url,
                 data={"Status": "completed"},
-                auth=(self.twilio_account_sid, self.twilio_auth_token)
+                auth=auth
             )
             
             if response.status_code == 200:
@@ -160,43 +189,45 @@ class VoiceService:
             else:
                 raise Exception(f"Failed to end call: {response.text}")
     
-    async def get_call(self, call_sid: str) -> dict:
-        """Get call details."""
+    async def get_call_status(self, call_sid: str) -> dict:
+        """Get call status."""
+        auth = self._get_twilio_auth()
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_account_sid}/Calls/{call_sid}.json"
         
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 url,
-                auth=(self.twilio_account_sid, self.twilio_auth_token)
+                auth=auth
             )
             
             if response.status_code == 200:
                 return response.json()
             else:
-                raise Exception(f"Failed to get call: {response.text}")
+                raise Exception(f"Failed to get call status: {response.text}")
     
     # ============================================
     # DEEPGRAM - Speech to Text
     # ============================================
     
-    async def transcribe_audio(self, audio_data: bytes, mime_type: str = "audio/wav") -> str:
+    async def transcribe_audio(self, audio_data: bytes, mimetype: str = "audio/wav") -> str:
         """Transcribe audio using Deepgram."""
+        if not self.deepgram_api_key:
+            raise Exception("Deepgram API key not configured")
+            
         url = "https://api.deepgram.com/v1/listen"
-        
-        params = {
-            "model": "nova-2",
-            "smart_format": "true",
-            "language": "en",
-        }
         
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 url,
-                params=params,
                 content=audio_data,
                 headers={
                     "Authorization": f"Token {self.deepgram_api_key}",
-                    "Content-Type": mime_type,
+                    "Content-Type": mimetype,
+                },
+                params={
+                    "model": "nova-2",
+                    "smart_format": "true",
+                    "punctuate": "true",
                 },
                 timeout=30.0
             )
@@ -208,12 +239,12 @@ class VoiceService:
             else:
                 raise Exception(f"Failed to transcribe: {response.text}")
     
-    def get_deepgram_websocket_url(self) -> str:
-        """Get Deepgram WebSocket URL for real-time streaming."""
-        return f"wss://api.deepgram.com/v1/listen?model=nova-2&encoding=mulaw&sample_rate=8000&channels=1"
+    def get_deepgram_ws_url(self) -> str:
+        """Get Deepgram WebSocket URL for streaming."""
+        return "wss://api.deepgram.com/v1/listen"
     
     def get_deepgram_headers(self) -> dict:
-        """Get headers for Deepgram WebSocket connection."""
+        """Get headers for Deepgram requests."""
         return {"Authorization": f"Token {self.deepgram_api_key}"}
     
     # ============================================
@@ -222,6 +253,9 @@ class VoiceService:
     
     async def text_to_speech(self, text: str, voice: str = "alloy") -> bytes:
         """Convert text to speech using OpenAI TTS."""
+        if not self.openai_api_key:
+            raise Exception("OpenAI API key not configured")
+            
         url = "https://api.openai.com/v1/audio/speech"
         
         async with httpx.AsyncClient() as client:
@@ -247,6 +281,9 @@ class VoiceService:
     
     async def text_to_speech_stream(self, text: str, voice: str = "alloy"):
         """Stream text to speech for lower latency."""
+        if not self.openai_api_key:
+            raise Exception("OpenAI API key not configured")
+            
         url = "https://api.openai.com/v1/audio/speech"
         
         async with httpx.AsyncClient() as client:
@@ -274,6 +311,9 @@ class VoiceService:
     
     def generate_welcome_twiml(self, welcome_message: str, gather_url: str) -> str:
         """Generate TwiML for initial call greeting with input gathering."""
+        # Escape any special XML characters
+        welcome_message = welcome_message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say voice="Polly.Joanna">{welcome_message}</Say>
@@ -285,6 +325,9 @@ class VoiceService:
     
     def generate_response_twiml(self, response_text: str, gather_url: str, end_call: bool = False) -> str:
         """Generate TwiML for AI response."""
+        # Escape any special XML characters
+        response_text = response_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        
         if end_call:
             return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -305,6 +348,8 @@ class VoiceService:
     
     def generate_hold_twiml(self, message: str = "Please hold while I process your request.") -> str:
         """Generate TwiML for hold/processing state."""
+        message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say voice="Polly.Joanna">{message}</Say>

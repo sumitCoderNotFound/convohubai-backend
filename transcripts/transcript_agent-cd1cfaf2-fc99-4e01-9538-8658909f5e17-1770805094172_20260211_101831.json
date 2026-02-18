@@ -1,0 +1,17 @@
+{
+  "agent_id": "cd1cfaf2-fc99-4e01-9538-8658909f5e17",
+  "room_name": "agent-cd1cfaf2-fc99-4e01-9538-8658909f5e17-1770805094172",
+  "participant_identity": "Sumit Malviya",
+  "call_start": "2026-02-11T10:18:23.082266",
+  "call_end": "2026-02-11T10:18:31.153374",
+  "duration_seconds": 8,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Hello! I'm your AI Assistant. How can I help you today? May I know your name?",
+      "timestamp": "2026-02-11T10:18:23.223314"
+    }
+  ],
+  "message_count": 1,
+  "channel": "video"
+}

@@ -1,11 +1,14 @@
 """
 ConvoHubAI - Agent API Routes
+Updated with TTS/STT provider support
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from typing import Optional
+from sqlalchemy import select, func, and_
+from typing import Optional, List
 from uuid import UUID
+from pydantic import BaseModel
+
 
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -175,7 +178,7 @@ async def create_agent(
             detail=f"Agent limit reached ({max_agents}). Upgrade your plan to create more agents."
         )
     
-    # Create agent
+    # Create agent - UPDATED with tts_provider and stt_provider!
     agent = Agent(
         name=agent_data.name,
         description=agent_data.description,
@@ -191,6 +194,8 @@ async def create_agent(
         fallback_message=agent_data.fallback_message,
         voice_id=agent_data.voice_id,
         voice_provider=agent_data.voice_provider,
+        tts_provider=agent_data.tts_provider,  # NEW!
+        stt_provider=agent_data.stt_provider,  # NEW!
         language=agent_data.language,
         conversation_flow=agent_data.conversation_flow,
         functions=agent_data.functions,
@@ -233,7 +238,7 @@ async def update_agent(
     workspace = await get_user_workspace(current_user, db, workspace_id)
     agent = await get_agent_or_404(agent_id, workspace, db)
     
-    # Update fields
+    # Update fields - This automatically handles tts_provider and stt_provider
     update_data = agent_data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(agent, field, value)
@@ -317,7 +322,7 @@ async def duplicate_agent(
     workspace = await get_user_workspace(current_user, db, workspace_id)
     original = await get_agent_or_404(agent_id, workspace, db)
     
-    # Create duplicate
+    # Create duplicate - UPDATED with tts_provider and stt_provider!
     agent = Agent(
         name=duplicate_data.name,
         description=original.description,
@@ -333,6 +338,8 @@ async def duplicate_agent(
         fallback_message=original.fallback_message,
         voice_id=original.voice_id,
         voice_provider=original.voice_provider,
+        tts_provider=original.tts_provider,  # NEW!
+        stt_provider=original.stt_provider,  # NEW!
         language=original.language,
         conversation_flow=original.conversation_flow,
         functions=original.functions,
@@ -409,21 +416,25 @@ async def create_from_template(
             detail="Template not found"
         )
     
-    # Create agent from template
+    # Create agent from template - UPDATED with voice settings!
     agent = Agent(
         name=template_data.name,
         description=template_data.description or template.description,
         agent_type=template.agent_type,
         channels=template.channels,
         status=AgentStatus.DRAFT,
-        llm_provider="openai",
-        llm_model="gpt-4",
+        llm_provider="groq",
+        llm_model="llama-3.3-70b-versatile",
         temperature=0.7,
         max_tokens="1000",
         system_prompt=template.system_prompt,
         welcome_message=template.welcome_message,
         conversation_flow=template.conversation_flow,
         functions=template.functions,
+        tts_provider=getattr(template, 'tts_provider', 'deepgram'),  # NEW!
+        stt_provider="groq",  # NEW!
+        voice_id=getattr(template, 'voice_id', 'aura-asteria-en'),  # NEW!
+        language=getattr(template, 'language', 'en-GB'),  # NEW!
         workspace_id=workspace.id,
         created_by_id=current_user.id
     )
@@ -437,3 +448,80 @@ async def create_from_template(
     await db.refresh(agent)
     
     return AgentResponse.model_validate(agent)
+
+# ============================================
+# CHAT ENDPOINT FOR TEST AUDIO
+# ============================================
+
+class AgentChatRequest(BaseModel):
+    message: str
+    conversation_history: Optional[List[dict]] = []
+    session_id: Optional[str] = None
+
+
+@router.post("/{agent_id}/chat")
+async def chat_with_agent(
+    agent_id: UUID,
+    request: AgentChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Chat with an AI agent for voice/text testing."""
+    from app.services.llm_service import llm_service
+    from datetime import datetime
+    
+    # Get agent
+    result = await db.execute(
+        select(Agent).where(
+            and_(
+                Agent.id == agent_id,
+                Agent.workspace_id == current_user.current_workspace_id,
+                Agent.is_deleted == False,
+            )
+        )
+    )
+    agent = result.scalar_one_or_none()
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    # Build system prompt
+    system_prompt = agent.system_prompt or f"""You are {agent.name}, an AI assistant.
+{agent.description or ''}
+
+Keep responses concise and conversational - suitable for voice interaction."""
+
+    # Build messages
+    messages = []
+    for msg in (request.conversation_history or []):
+        messages.append({
+            "role": msg.get("role", "user"),
+            "content": msg.get("content", "")
+        })
+    messages.append({"role": "user", "content": request.message})
+    
+    try:
+        response = await llm_service.generate_response(
+            messages=messages,
+            system_prompt=system_prompt,
+            model=agent.llm_model or "llama-3.3-70b-versatile",
+            provider=agent.llm_provider or "groq",
+            temperature=agent.temperature or 0.7,
+            max_tokens=300,
+        )
+        
+        return {
+            "response": response,
+            "session_id": request.session_id or f"session_{agent_id}",
+            "timestamp": datetime.utcnow().isoformat(),
+            # Return voice settings for frontend
+            "voice_config": {
+                "tts_provider": agent.tts_provider or "deepgram",
+                "stt_provider": agent.stt_provider or "groq",
+                "voice_id": agent.voice_id or "aura-asteria-en",
+                "language": agent.language or "en-GB"
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed: {str(e)}")

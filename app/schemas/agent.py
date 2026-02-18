@@ -1,5 +1,6 @@
 """
 ConvoHubAI - Agent Schemas
+Updated with TTS/STT provider fields
 """
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
@@ -20,8 +21,8 @@ class AgentCreate(BaseModel):
     channels: List[str] = ["chat"]
     
     # LLM Configuration
-    llm_provider: str = "openai"
-    llm_model: str = "gpt-4"
+    llm_provider: str = "groq"
+    llm_model: str = "llama-3.3-70b-versatile"
     temperature: float = Field(0.7, ge=0, le=2)
     max_tokens: str = "1000"
     
@@ -30,10 +31,12 @@ class AgentCreate(BaseModel):
     welcome_message: Optional[str] = None
     fallback_message: Optional[str] = None
     
-    # Voice settings
-    voice_id: Optional[str] = None
-    voice_provider: Optional[str] = None
-    language: str = "en"
+    # Voice settings - UPDATED!
+    voice_id: Optional[str] = "aura-asteria-en"
+    voice_provider: Optional[str] = None  # Legacy field
+    tts_provider: Optional[str] = "deepgram"  # NEW!
+    stt_provider: Optional[str] = "groq"  # NEW!
+    language: str = "en-GB"
     
     # Advanced
     conversation_flow: Optional[Dict[str, Any]] = None
@@ -50,11 +53,14 @@ class AgentCreate(BaseModel):
                 "description": "Helps prospective students with inquiries",
                 "agent_type": "single_prompt",
                 "channels": ["chat", "voice"],
-                "llm_provider": "openai",
-                "llm_model": "gpt-4",
+                "llm_provider": "groq",
+                "llm_model": "llama-3.3-70b-versatile",
                 "system_prompt": "You are a helpful admissions assistant...",
                 "welcome_message": "Hello! I'm here to help with your admissions questions.",
-                "language": "en"
+                "tts_provider": "deepgram",
+                "stt_provider": "groq",
+                "voice_id": "aura-asteria-en",
+                "language": "en-GB"
             }
         }
 
@@ -77,9 +83,11 @@ class AgentUpdate(BaseModel):
     welcome_message: Optional[str] = None
     fallback_message: Optional[str] = None
     
-    # Voice settings
+    # Voice settings - UPDATED!
     voice_id: Optional[str] = None
-    voice_provider: Optional[str] = None
+    voice_provider: Optional[str] = None  # Legacy field
+    tts_provider: Optional[str] = None  # NEW!
+    stt_provider: Optional[str] = None  # NEW!
     language: Optional[str] = None
     
     # Advanced
@@ -90,10 +98,10 @@ class AgentUpdate(BaseModel):
     # Knowledge base
     knowledge_base_id: Optional[UUID] = None
     
-    # Chat Settings (NEW)
+    # Chat Settings
     response_style: Optional[str] = None  # conversational, formal, concise
     
-    # Security Settings (NEW)
+    # Security Settings
     content_filter_enabled: Optional[bool] = None
 
 
@@ -115,21 +123,24 @@ class AgentResponse(BaseModel):
     welcome_message: Optional[str]
     fallback_message: Optional[str]
     
+    # Voice settings - UPDATED!
     voice_id: Optional[str]
-    voice_provider: Optional[str]
+    voice_provider: Optional[str]  # Legacy field
+    tts_provider: Optional[str] = "deepgram"  # NEW!
+    stt_provider: Optional[str] = "groq"  # NEW!
     language: str
     
     conversation_flow: Optional[Dict[str, Any]]
     functions: Optional[List[Dict[str, Any]]]
     guardrails: Optional[Dict[str, Any]]
     
-    # Chat Settings (NEW)
+    # Chat Settings
     response_style: Optional[str] = "conversational"
     
-    # Security Settings (NEW)
+    # Security Settings
     content_filter_enabled: Optional[bool] = True
     
-    # Publishing (NEW)
+    # Publishing
     is_published: Optional[bool] = False
     published_at: Optional[str] = None
     
@@ -173,6 +184,11 @@ class AgentTemplateResponse(BaseModel):
     functions: Optional[List[Dict[str, Any]]]
     is_featured: bool
     usage_count: str
+    
+    # Voice settings for templates
+    tts_provider: Optional[str] = "deepgram"
+    voice_id: Optional[str] = "aura-asteria-en"
+    language: Optional[str] = "en-GB"
     
     class Config:
         from_attributes = True

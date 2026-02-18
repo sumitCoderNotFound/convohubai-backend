@@ -1,6 +1,7 @@
 """
 ConvoHubAI - Agent Model
 AI agents that handle conversations
+Updated with Voice/TTS/STT settings
 """
 from sqlalchemy import Column, String, Boolean, Text, JSON, Enum, ForeignKey, Float
 from sqlalchemy.orm import relationship
@@ -57,20 +58,34 @@ class Agent(BaseModel):
     )
     
     # LLM Configuration
-    llm_provider = Column(String(50), default="openai")  # openai, anthropic, custom
-    llm_model = Column(String(100), default="gpt-4")
+    llm_provider = Column(String(50), default="groq")  # groq, openai, anthropic
+    llm_model = Column(String(100), default="llama-3.3-70b-versatile")
     temperature = Column(Float, default=0.7)
     max_tokens = Column(String(10), default="1000")
     
-    # Prompts
+    # ===========================================
+    # VOICE/TTS/STT SETTINGS (NEW!)
+    # ===========================================
+    
+    # TTS (Text-to-Speech) Settings
+    tts_provider = Column(String(50), default="deepgram")  # deepgram, openai, elevenlabs
+    voice_id = Column(String(100), default="aura-asteria-en")  # Voice ID for TTS
+    
+    # STT (Speech-to-Text) Settings  
+    stt_provider = Column(String(50), default="groq")  # groq (free!), deepgram
+    
+    # Language Settings
+    language = Column(String(10), default="en-GB")  # en-GB, en-US, es-ES, fr-FR, etc.
+    
+    # Legacy voice fields (for backward compatibility)
+    voice_provider = Column(String(50), nullable=True)  # retell, elevenlabs, etc.
+    
+    # ===========================================
+    # PROMPTS
+    # ===========================================
     system_prompt = Column(Text, nullable=True)
     welcome_message = Column(Text, nullable=True)
     fallback_message = Column(Text, nullable=True)
-    
-    # Voice settings (for voice agents)
-    voice_id = Column(String(100), nullable=True)
-    voice_provider = Column(String(50), nullable=True)  # retell, elevenlabs, etc.
-    language = Column(String(10), default="en")
     
     # Behavior
     conversation_flow = Column(JSON, nullable=True)  # Flow configuration
@@ -82,9 +97,6 @@ class Agent(BaseModel):
     
     # Security Settings
     content_filter_enabled = Column(Boolean, default=True)
-    
-    # Webhook Settings
-    # webhooks = Column(JSON, nullable=True)  # List of webhook configurations
     
     # Publishing
     is_published = Column(Boolean, default=False)
@@ -132,6 +144,15 @@ class Agent(BaseModel):
     
     def __repr__(self):
         return f"<Agent {self.name}>"
+    
+    def get_voice_config(self):
+        """Get voice configuration for this agent."""
+        return {
+            "tts_provider": self.tts_provider or "deepgram",
+            "voice_id": self.voice_id or "aura-asteria-en",
+            "stt_provider": self.stt_provider or "groq",
+            "language": self.language or "en-GB",
+        }
 
 
 class AgentTemplate(BaseModel):
@@ -152,6 +173,11 @@ class AgentTemplate(BaseModel):
     welcome_message = Column(Text, nullable=True)
     conversation_flow = Column(JSON, nullable=True)
     functions = Column(JSON, nullable=True)
+    
+    # Voice settings
+    tts_provider = Column(String(50), default="deepgram")
+    voice_id = Column(String(100), default="aura-asteria-en")
+    language = Column(String(10), default="en-GB")
     
     # Metadata
     is_featured = Column(Boolean, default=False)
