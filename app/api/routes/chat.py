@@ -17,6 +17,7 @@ from app.models.user import User
 from app.models.agent import Agent, AgentStatus
 from app.models.conversation import Conversation, Message, ConversationStatus, ConversationType, MessageRole
 from app.services.llm_service import llm_service
+from app.services.perception_service import perception_service
 from pydantic import BaseModel
 
 
@@ -34,12 +35,23 @@ class ChatMessageRequest(BaseModel):
     conversation_id: Optional[UUID] = None
 
 
+class PerceptionData(BaseModel):
+    """Perception/sentiment analysis for a message."""
+    sentiment: str          # positive, neutral, negative
+    emotion: str            # happy, excited, neutral, confused, frustrated, angry
+    engagement: str         # high, medium, low
+    intent: Optional[str]   # purchase_intent, support_request, etc.
+    lead_score: Optional[int] = None  # 0-100, only on conversation end
+    keywords: list[str] = []
+
+
 class ChatMessageResponse(BaseModel):
     """Response from chat."""
     conversation_id: UUID
     message_id: UUID
     response: str
     created_at: datetime
+    perception: Optional[PerceptionData] = None
 
 
 class ConversationResponse(BaseModel):
@@ -203,6 +215,44 @@ async def send_message(
     )
     db.add(ai_message)
     
+    # ── Perception analysis ──────────────────────────────────────────
+    perception_data = None
+    try:
+        # Analyse the user's message
+        msg_analysis = perception_service.analyze_message(request.message, "user")
+
+        # Build full conversation history for lead score / engagement
+        all_messages = [
+            {"role": msg.role.value, "content": msg.content}
+            for msg in messages
+        ]
+        all_messages.append({"role": "assistant", "content": response_text})
+        conv_analytics = perception_service.analyze_conversation(
+            conversation_id=str(conversation.id),
+            messages=all_messages,
+            duration_seconds=0,
+        )
+
+        perception_data = PerceptionData(
+            sentiment=msg_analysis.sentiment.value,
+            emotion=msg_analysis.emotion.value if msg_analysis.emotion else "neutral",
+            engagement=conv_analytics.engagement_level.value,
+            intent=msg_analysis.intent,
+            lead_score=conv_analytics.lead_score,
+            keywords=msg_analysis.keywords[:5],
+        )
+
+        # Persist aggregated sentiment onto conversation row
+        conversation.sentiment_score = (
+            1.0 if conv_analytics.overall_sentiment.value == "positive"
+            else -1.0 if conv_analytics.overall_sentiment.value == "negative"
+            else 0.0
+        )
+        conversation.sentiment = conv_analytics.overall_sentiment.value
+    except Exception:
+        pass  # perception is non-critical; never fail the chat response
+    # ────────────────────────────────────────────────────────────────
+
     # Update conversation
     conversation.updated_at = datetime.utcnow()
     current_count = get_message_count(conversation)
@@ -215,6 +265,7 @@ async def send_message(
         message_id=ai_message.id,
         response=response_text,
         created_at=ai_message.created_at,
+        perception=perception_data,
     )
 
 

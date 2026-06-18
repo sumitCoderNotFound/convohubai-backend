@@ -446,3 +446,273 @@ async def get_chat_history(
         })
     
     return {"chats": chats, "total": len(chats)}
+
+
+# ============================================
+# PERCEPTION / SENTIMENT ANALYTICS
+# ============================================
+
+from app.models.conversation import Message
+from app.services.perception_service import perception_service
+
+
+@router.get("/perception/overview")
+async def get_perception_overview(
+    time_range: str = "7d",
+    agent_id: Optional[UUID] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Aggregate perception analytics across all conversations.
+    Returns sentiment distribution, emotion breakdown, lead scores, engagement.
+    """
+    workspace_id = current_user.current_workspace_id
+    days = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}.get(time_range, 7)
+    start_date = datetime.utcnow() - timedelta(days=days)
+
+    # Base conversation filter
+    base_filter = [
+        Conversation.workspace_id == workspace_id,
+        Conversation.created_at >= start_date,
+    ]
+    if agent_id:
+        base_filter.append(Conversation.agent_id == agent_id)
+
+    # Fetch all relevant conversations with their messages
+    result = await db.execute(
+        select(Conversation).where(and_(*base_filter))
+    )
+    conversations = result.scalars().all()
+
+    total_convs = len(conversations)
+    sentiment_counts = {"positive": 0, "neutral": 0, "negative": 0}
+    emotion_counts: dict = {}
+    engagement_counts = {"high": 0, "medium": 0, "low": 0}
+    intent_counts: dict = {}
+    lead_scores: list[int] = []
+    analyzed_convs = 0
+
+    for conv in conversations:
+        # Load messages for this conversation
+        msgs_result = await db.execute(
+            select(Message)
+            .where(Message.conversation_id == conv.id)
+            .order_by(Message.message_timestamp)
+        )
+        msgs = msgs_result.scalars().all()
+        if not msgs:
+            continue
+
+        messages_payload = [
+            {"role": m.role.value, "content": m.content} for m in msgs
+        ]
+        try:
+            analytics = perception_service.analyze_conversation(
+                conversation_id=str(conv.id),
+                messages=messages_payload,
+                duration_seconds=int(conv.duration_seconds or 0),
+            )
+        except Exception:
+            continue
+
+        analyzed_convs += 1
+        sentiment_counts[analytics.overall_sentiment.value] = (
+            sentiment_counts.get(analytics.overall_sentiment.value, 0) + 1
+        )
+        emotion_key = analytics.dominant_emotion.value
+        emotion_counts[emotion_key] = emotion_counts.get(emotion_key, 0) + 1
+        engagement_counts[analytics.engagement_level.value] = (
+            engagement_counts.get(analytics.engagement_level.value, 0) + 1
+        )
+        for intent in analytics.detected_intents:
+            intent_counts[intent] = intent_counts.get(intent, 0) + 1
+        lead_scores.append(analytics.lead_score)
+
+    total = max(analyzed_convs, 1)
+    avg_lead_score = round(sum(lead_scores) / max(len(lead_scores), 1))
+
+    # Sentiment timeline (daily buckets)
+    sentiment_timeline = []
+    for i in range(days - 1, -1, -1):
+        day = datetime.utcnow() - timedelta(days=i)
+        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+
+        day_filter = [
+            Conversation.workspace_id == workspace_id,
+            Conversation.created_at >= day_start,
+            Conversation.created_at < day_end,
+        ]
+        if agent_id:
+            day_filter.append(Conversation.agent_id == agent_id)
+
+        day_result = await db.execute(
+            select(Conversation).where(and_(*day_filter))
+        )
+        day_convs = day_result.scalars().all()
+
+        pos = neg = neu = 0
+        for conv in day_convs:
+            s = conv.sentiment or "neutral"
+            if s == "positive":
+                pos += 1
+            elif s == "negative":
+                neg += 1
+            else:
+                neu += 1
+
+        sentiment_timeline.append({
+            "date": day_start.strftime("%m/%d"),
+            "positive": pos,
+            "neutral": neu,
+            "negative": neg,
+        })
+
+    # Top intents
+    top_intents = sorted(intent_counts.items(), key=lambda x: x[1], reverse=True)[:8]
+
+    return {
+        "total_conversations": total_convs,
+        "analyzed_conversations": analyzed_convs,
+        "avg_lead_score": avg_lead_score,
+        "sentiment": {
+            "positive": round((sentiment_counts["positive"] / total) * 100),
+            "neutral": round((sentiment_counts["neutral"] / total) * 100),
+            "negative": round((sentiment_counts["negative"] / total) * 100),
+            "counts": sentiment_counts,
+        },
+        "emotions": [
+            {"name": k.capitalize(), "value": v, "pct": round((v / total) * 100)}
+            for k, v in sorted(emotion_counts.items(), key=lambda x: x[1], reverse=True)
+        ],
+        "engagement": {
+            "high": round((engagement_counts["high"] / total) * 100),
+            "medium": round((engagement_counts["medium"] / total) * 100),
+            "low": round((engagement_counts["low"] / total) * 100),
+        },
+        "top_intents": [
+            {"name": k.replace("_", " ").title(), "count": v}
+            for k, v in top_intents
+        ],
+        "sentiment_timeline": sentiment_timeline,
+    }
+
+
+@router.get("/perception/conversation/{conversation_id}")
+async def get_conversation_perception(
+    conversation_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get detailed perception analytics for a single conversation."""
+    workspace_id = current_user.current_workspace_id
+
+    conv_result = await db.execute(
+        select(Conversation).where(
+            and_(
+                Conversation.id == conversation_id,
+                Conversation.workspace_id == workspace_id,
+            )
+        )
+    )
+    conversation = conv_result.scalar_one_or_none()
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    msgs_result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.message_timestamp)
+    )
+    msgs = msgs_result.scalars().all()
+
+    messages_payload = [
+        {"role": m.role.value, "content": m.content} for m in msgs
+    ]
+
+    analytics = perception_service.analyze_conversation(
+        conversation_id=str(conversation_id),
+        messages=messages_payload,
+        duration_seconds=int(conversation.duration_seconds or 0),
+    )
+
+    return {
+        "conversation_id": str(conversation_id),
+        "analytics": analytics.dict(),
+        "message_analyses": [
+            {
+                "index": i,
+                "role": m.role.value,
+                "content": m.content[:200],
+                "analysis": perception_service.analyze_message(m.content, m.role.value).dict(exclude={"timestamp"}),
+            }
+            for i, m in enumerate(msgs)
+        ],
+    }
+
+
+@router.get("/perception/leaderboard")
+async def get_perception_leaderboard(
+    time_range: str = "7d",
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Agent leaderboard ranked by avg lead score and positive sentiment rate."""
+    workspace_id = current_user.current_workspace_id
+    days = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}.get(time_range, 7)
+    start_date = datetime.utcnow() - timedelta(days=days)
+
+    agents_result = await db.execute(
+        select(Agent).where(Agent.workspace_id == workspace_id)
+    )
+    agents = agents_result.scalars().all()
+
+    leaderboard = []
+    for agent in agents:
+        convs_result = await db.execute(
+            select(Conversation).where(
+                and_(
+                    Conversation.agent_id == agent.id,
+                    Conversation.created_at >= start_date,
+                )
+            )
+        )
+        convs = convs_result.scalars().all()
+        if not convs:
+            continue
+
+        lead_scores, pos_count = [], 0
+        for conv in convs:
+            msgs_result = await db.execute(
+                select(Message)
+                .where(Message.conversation_id == conv.id)
+                .order_by(Message.message_timestamp)
+            )
+            msgs = msgs_result.scalars().all()
+            if not msgs:
+                continue
+            try:
+                an = perception_service.analyze_conversation(
+                    str(conv.id),
+                    [{"role": m.role.value, "content": m.content} for m in msgs],
+                )
+                lead_scores.append(an.lead_score)
+                if an.overall_sentiment.value == "positive":
+                    pos_count += 1
+            except Exception:
+                pass
+
+        if not lead_scores:
+            continue
+
+        leaderboard.append({
+            "agent": agent.name,
+            "agent_id": str(agent.id),
+            "conversations": len(convs),
+            "avg_lead_score": round(sum(lead_scores) / len(lead_scores)),
+            "positive_rate": round((pos_count / len(lead_scores)) * 100),
+        })
+
+    leaderboard.sort(key=lambda x: x["avg_lead_score"], reverse=True)
+    return {"leaderboard": leaderboard}

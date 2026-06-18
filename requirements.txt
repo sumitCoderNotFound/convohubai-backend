@@ -60,3 +60,7 @@ httpx==0.26.0
 
 # Logging
 loguru==0.7.2
+
+# Google OAuth (used by auth.py)
+google-auth==2.28.1
+google-auth-oauthlib==1.2.0

@@ -23,6 +23,26 @@ from app.models.phone_number import PhoneNumber, PhoneNumberType, PhoneNumberSta
 from app.models.webhook import Webhook
 from app.models.conversation_flow import ConversationFlow, FlowNode
 
+# Recruitment domain models (registered so create_all / Alembic discover them)
+from app.recruitment.models import (
+    JobPosition,
+    Candidate,
+    Application,
+    ApplicationHistory,
+    InterviewTemplate,
+    InterviewVersion,
+    InterviewQuestion,
+    BranchRule,
+    RubricCriterion,
+    ScoreAnchor,
+    InterviewInvite,
+    InterviewSession,
+    SessionAnswer,
+    InterviewScore,
+    CriterionScore,
+    RecruitmentSettings,
+)
+
 __all__ = [
     # Base
     "BaseModel",
@@ -70,5 +90,23 @@ __all__ = [
     
     "ConversationFlow",
     "FlowNode",
+
+    # Recruitment
+    "JobPosition",
+    "Candidate",
+    "Application",
+    "ApplicationHistory",
+    "InterviewTemplate",
+    "InterviewVersion",
+    "InterviewQuestion",
+    "BranchRule",
+    "RubricCriterion",
+    "ScoreAnchor",
+    "InterviewInvite",
+    "InterviewSession",
+    "SessionAnswer",
+    "InterviewScore",
+    "CriterionScore",
+    "RecruitmentSettings",
 ]
 

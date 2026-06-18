@@ -54,5 +54,9 @@ api_router.include_router(video.router)
 from app.api.routes import calls
 api_router.include_router(calls.router)
 
+# Recruitment domain (jobs, candidates, interviews, questions, rubrics, simulation)
+from app.recruitment.api import recruitment_router
+api_router.include_router(recruitment_router)
+
 
 __all__ = ["api_router"]
