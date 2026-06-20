@@ -24,6 +24,7 @@ class RecruitmentSettings(BaseModel):
     # Branding for the candidate portal
     brand_name = Column(String(255), nullable=True)
     brand_logo_url = Column(String(500), nullable=True)
+    interviewer_avatar_url = Column(String(500), nullable=True)  # Phase 14: photo for the animated avatar
 
     def __repr__(self):
         return f"<RecruitmentSettings ws={self.workspace_id}>"

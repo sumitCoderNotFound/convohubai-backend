@@ -13,6 +13,8 @@ class QuestionConfig(BaseModel):
     options: Optional[List[str]] = None
     min_value: Optional[float] = None
     max_value: Optional[float] = None
+    response_type: Optional[str] = None   # text | single_select | multi_select | number | rating | yes_no | info
+    scale: Optional[int] = Field(None, ge=2, le=10)
 
 
 class QuestionCreate(BaseModel):

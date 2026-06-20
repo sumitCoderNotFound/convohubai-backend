@@ -1,5 +1,5 @@
 """Score schemas (recruiter-facing; Phase 2)."""
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
@@ -44,3 +44,34 @@ class ApplicationResultResponse(BaseModel):
     session_id: Optional[UUID] = None
     score: Optional[ScoreResponse] = None
     has_session: bool = False
+
+
+# ---------------- Score review / override (Phase 13) ----------------
+class ScoreReviewCreate(BaseModel):
+    override_recommendation: Optional[str] = None  # strong|moderate|weak|insufficient
+    override_score: Optional[float] = Field(None, ge=0, le=100)
+    note: Optional[str] = None
+
+
+class ScoreReviewResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    override_recommendation: Optional[str] = None
+    override_score: Optional[float] = None
+    note: Optional[str] = None
+    reviewer_user_id: Optional[UUID] = None
+    created_at: datetime
+
+
+# ---------------- Speech analytics (Phase 14) ----------------
+class SpeechAnalytics(BaseModel):
+    words_per_minute: Optional[int] = None
+    total_words: int = 0
+    total_seconds: int = 0
+    filler_count: int = 0
+    filler_rate: float = 0.0
+    pace_label: str = "unknown"
+    sentiment_label: str = "neutral"
+    sentiment_score: float = 0.0
+    positive_hits: int = 0
+    negative_hits: int = 0

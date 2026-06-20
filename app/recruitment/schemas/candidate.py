@@ -112,3 +112,14 @@ class BulkImportResult(BaseModel):
     skipped: int = 0
     errors: List[str] = Field(default_factory=list)
     candidate_ids: List[UUID] = Field(default_factory=list)
+
+
+# ---------------- Outcome notifications (Phase 11) ----------------
+class NotifyRequest(BaseModel):
+    kind: str = Field(..., description="selected | advance | rejected | reminder | completed | score_ready")
+    base_url: Optional[str] = None
+
+
+class NotifyResult(BaseModel):
+    sent: bool
+    message: str

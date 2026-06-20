@@ -11,8 +11,11 @@ from app.recruitment.models.job import JobPosition
 from app.recruitment.schemas.candidate import (
     CandidateCreate, CandidateUpdate, CandidateResponse, CandidateListResponse,
     ApplicationCreate, ApplicationDecision, ApplicationResponse, ApplicationListResponse,
-    ApplicationHistoryResponse, BulkImportRequest, BulkImportResult,
+    ApplicationHistoryResponse, BulkImportRequest, BulkImportResult, NotifyRequest, NotifyResult,
 )
+import asyncio as _asyncio
+from app.recruitment.services.email import send_email, outcome_email_html, email_configured
+from app.recruitment.api.deps import get_or_create_settings as _get_settings
 from app.recruitment.schemas.common import MessageResponse
 from app.recruitment.api.deps import get_ctx, WorkspaceContext
 
@@ -238,3 +241,46 @@ async def bulk_import(payload: BulkImportRequest, ctx: WorkspaceContext = Depend
 
     await db.commit()
     return result
+
+
+
+@router.post("/applications/{application_id}/notify", response_model=NotifyResult)
+async def notify_candidate(application_id: UUID, payload: NotifyRequest, ctx: WorkspaceContext = Depends(get_ctx), db: AsyncSession = Depends(get_db)):
+    """Email the candidate an outcome/reminder. Best-effort; requires SMTP configured."""
+    ctx.require_edit()
+    app = (await db.execute(select(Application).where(
+        Application.id == application_id, Application.workspace_id == ctx.id, Application.is_deleted == False))).scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+    cand = (await db.execute(select(Candidate).where(Candidate.id == app.candidate_id))).scalar_one_or_none()
+    if not cand or not cand.email:
+        return NotifyResult(sent=False, message="Candidate has no email address.")
+    if not email_configured():
+        return NotifyResult(sent=False, message="Email is not configured. Set SMTP settings to send notifications.")
+
+    job_title = None
+    if app.job_position_id:
+        job = (await db.execute(select(JobPosition).where(JobPosition.id == app.job_position_id))).scalar_one_or_none()
+        job_title = job.title if job else None
+    settings_row = await _get_settings(ctx.id, db)
+    subjects = {
+        "selected": "Good news about your application",
+        "advance": "Your application is moving forward",
+        "rejected": "Update on your application",
+        "reminder": "A reminder to complete your interview",
+        "completed": "We received your interview",
+        "score_ready": "Your interview has been reviewed",
+    }
+    subject = subjects.get(payload.kind, "Update on your application")
+    html = outcome_email_html(payload.kind, cand.full_name or "", job_title or "", settings_row.brand_name or "")
+    # Use a workspace custom template if one is set for this kind.
+    from app.recruitment.models.email_template import EmailTemplate as _ET
+    from app.recruitment.services.email import render_custom as _render
+    tmpl = (await db.execute(select(_ET).where(
+        _ET.workspace_id == ctx.id, _ET.kind == payload.kind, _ET.enabled == True, _ET.is_deleted == False))).scalar_one_or_none()
+    if tmpl:
+        ctx_vars = {"candidate_name": cand.full_name or "", "job_title": job_title or "",
+                    "interview_name": "", "brand_name": settings_row.brand_name or "", "link": ""}
+        subject, html = _render(tmpl.subject, tmpl.body_html, ctx_vars)
+    sent = await _asyncio.to_thread(send_email, cand.email, subject, html, subject)
+    return NotifyResult(sent=sent, message=(f"Email sent to {cand.email}" if sent else "Could not send the email. Check SMTP settings."))

@@ -45,3 +45,17 @@ def next_index_after(questions: List, current_index: int, answer_text: Optional[
     if nxt >= len(questions):
         return None, True, False
     return nxt, False, False
+
+
+def resolve_question_index(questions, question_id, fallback_idx):
+    """
+    Map a submitted question_id to its position in the ordered question list.
+    Falls back to the session's current index if the id isn't found.
+    This makes answer storage robust to retries and out-of-order posts.
+    """
+    if question_id is not None:
+        target = str(question_id)
+        for i, q in enumerate(questions):
+            if str(q.id) == target:
+                return i
+    return fallback_idx

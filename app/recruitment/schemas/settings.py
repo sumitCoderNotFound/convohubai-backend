@@ -12,6 +12,7 @@ class SettingsResponse(BaseModel):
     candidates_see_scores: bool
     brand_name: Optional[str] = None
     brand_logo_url: Optional[str] = None
+    interviewer_avatar_url: Optional[str] = None
 
 
 class SettingsUpdate(BaseModel):
@@ -21,3 +22,4 @@ class SettingsUpdate(BaseModel):
     candidates_see_scores: Optional[bool] = None
     brand_name: Optional[str] = None
     brand_logo_url: Optional[str] = None
+    interviewer_avatar_url: Optional[str] = None

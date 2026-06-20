@@ -242,7 +242,7 @@ async def generate_content(template_id: UUID, payload: GenerateRequest, ctx: Wor
     if not context:
         raise HTTPException(status_code=400, detail="Provide context or link a job with a description")
 
-    result = await generate_interview_content(context, payload.num_questions)
+    result = await generate_interview_content(context, payload.num_questions, language=getattr(draft, "language", "en") or "en")
 
     start_idx = await db.scalar(select(func.count()).select_from(
         select(InterviewQuestion).where(InterviewQuestion.version_id == draft.id).subquery())) or 0

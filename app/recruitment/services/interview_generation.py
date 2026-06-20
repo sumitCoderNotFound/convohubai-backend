@@ -28,12 +28,15 @@ def _safe_json(text: str) -> Dict[str, Any]:
     return json.loads(text)
 
 
-async def generate_interview_content(context: str, num_questions: int) -> Dict[str, List[Dict[str, Any]]]:
+async def generate_interview_content(context: str, num_questions: int, language: str = "en") -> Dict[str, List[Dict[str, Any]]]:
     """Returns {questions: [...], criteria: [...], source: 'ai'|'fallback'}."""
     try:
         llm = LLMService()
+        lang_note = ""
+        if language and language.lower() not in ("en", "english"):
+            lang_note = f"\n\nWrite ALL question prompt_text and criteria names/descriptions/anchors in this language: {language}."
         raw = await llm.generate_response(
-            messages=[{"role": "user", "content": f"Role context:\n{context}\n\nProduce {num_questions} questions."}],
+            messages=[{"role": "user", "content": f"Role context:\n{context}\n\nProduce {num_questions} questions.{lang_note}"}],
             system_prompt=_SYSTEM,
             temperature=0.3,
             max_tokens=1400,

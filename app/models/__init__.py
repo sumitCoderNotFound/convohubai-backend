@@ -41,6 +41,13 @@ from app.recruitment.models import (
     InterviewScore,
     CriterionScore,
     RecruitmentSettings,
+    AtsConnection,
+    AtsMapping,
+    PreScreenQuestion,
+    PreScreenResult,
+    CandidateDocument,
+    ScoreReview,
+    EmailTemplate,
 )
 
 __all__ = [
@@ -108,5 +115,12 @@ __all__ = [
     "InterviewScore",
     "CriterionScore",
     "RecruitmentSettings",
+    "AtsConnection",
+    "AtsMapping",
+    "PreScreenQuestion",
+    "PreScreenResult",
+    "CandidateDocument",
+    "ScoreReview",
+    "EmailTemplate",
 ]
 

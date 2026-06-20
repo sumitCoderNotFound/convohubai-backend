@@ -143,7 +143,15 @@ async def send_invite_email(invite_id: UUID, payload: SendEmailRequest, ctx: Wor
     base = (payload.base_url or "").rstrip("/")
     url = f"{base}{_link(inv.token)}" if base else _link(inv.token)
     html = invite_email_html(tpl.name if tpl else "your interview", url, settings_row.brand_name or "")
-    sent = await asyncio.to_thread(send_email, inv.email, f"Interview invite: {tpl.name if tpl else 'Interview'}", html, f"Start your interview: {url}")
+    subject = f"Interview invite: {tpl.name if tpl else 'Interview'}"
+    from app.recruitment.models.email_template import EmailTemplate as _ET
+    from app.recruitment.services.email import render_custom as _render
+    _t = (await db.execute(select(_ET).where(
+        _ET.workspace_id == ctx.id, _ET.kind == "invite", _ET.enabled == True, _ET.is_deleted == False))).scalar_one_or_none()
+    if _t:
+        subject, html = _render(_t.subject, _t.body_html, {"candidate_name": inv.candidate_name or "",
+            "interview_name": tpl.name if tpl else "", "brand_name": settings_row.brand_name or "", "link": url, "job_title": ""})
+    sent = await asyncio.to_thread(send_email, inv.email, subject, html, f"Start your interview: {url}")
     if sent:
         from datetime import datetime
         inv.sent_at = datetime.utcnow()
